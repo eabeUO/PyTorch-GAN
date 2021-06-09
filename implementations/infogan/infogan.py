@@ -3,6 +3,7 @@ import os
 import numpy as np
 import math
 import itertools
+import yaml
 
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
@@ -10,28 +11,28 @@ from torchvision.utils import save_image
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
+from datasets import WCDataset
+from test_tube import Experiment
 
+import torchvision.utils as vutils
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
-os.makedirs("images/static/", exist_ok=True)
-os.makedirs("images/varying_c1/", exist_ok=True)
-os.makedirs("images/varying_c2/", exist_ok=True)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
+parser.add_argument("--n_epochs", type=int, default=1000, help="number of epochs of training")
+parser.add_argument("--batch_size", type=int, default=1024, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
-parser.add_argument("--latent_dim", type=int, default=62, help="dimensionality of the latent space")
+parser.add_argument("--n_cpu", type=int, default=32, help="number of cpu threads to use during batch generation")
+parser.add_argument("--latent_dim", type=int, default=64, help="dimensionality of the latent space")
 parser.add_argument("--code_dim", type=int, default=2, help="latent code")
 parser.add_argument("--n_classes", type=int, default=10, help="number of classes for dataset")
-parser.add_argument("--img_size", type=int, default=32, help="size of each image dimension")
+parser.add_argument("--img_size", type=int, default=64, help="size of each image dimension")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=400, help="interval between image sampling")
+parser.add_argument("--sample_interval", type=int, default=10, help="interval between image sampling")
 opt = parser.parse_args()
 print(opt)
 
@@ -50,7 +51,7 @@ def weights_init_normal(m):
 def to_categorical(y, num_columns):
     """Returns one-hot encoded Variable"""
     y_cat = np.zeros((y.shape[0], num_columns))
-    y_cat[range(y.shape[0]), y] = 1.0
+    y_cat[range(y.shape[0]), y.astype(int)] = 1.0
 
     return Variable(FloatTensor(y_cat))
 
@@ -146,19 +147,41 @@ generator.apply(weights_init_normal)
 discriminator.apply(weights_init_normal)
 
 # Configure data loader
-os.makedirs("../../data/mnist", exist_ok=True)
-dataloader = torch.utils.data.DataLoader(
-    datasets.MNIST(
-        "../../data/mnist",
-        train=True,
-        download=True,
-        transform=transforms.Compose(
-            [transforms.Resize(opt.img_size), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
-        ),
-    ),
-    batch_size=opt.batch_size,
-    shuffle=True,
-)
+log_save_dir = os.path.expanduser('~/Research/FMEphys/GAN_Logs')
+exp_log = Experiment(name='InfoGan',
+                 debug=False,
+                 save_dir=log_save_dir,
+                 autosave=True)
+os.makedirs(os.path.join(log_save_dir,exp_log.name,f'version_{exp_log.version}','checkpoints'), exist_ok=True)
+configfile = os.path.join(log_save_dir,exp_log.name,f'version_{exp_log.version}','config.yaml')
+with open(configfile,'w') as file: 
+    try:
+        yaml.dump(opt.__dict__, file)
+    except yaml.YAMLError as exc:
+        print(exc)
+
+train_path = os.path.expanduser("~/Research/FMEphys/WC3d_Train_Data.csv")
+val_path = os.path.expanduser("~/Research/FMEphys/WC3d_Val_Data.csv")
+SetRange = transforms.Lambda(lambda X: 2 * X - 1.)
+transform = transforms.Compose([transforms.Grayscale(num_output_channels=1),
+                                transforms.Resize((64,64)),
+                                transforms.ToTensor(),
+                                SetRange])
+
+dataset = WCDataset(root_dir = os.path.expanduser("~/Research/FMEphys/data/"),
+                                csv_file = train_path,
+                                transform=transform
+                                )
+
+dataloader = DataLoader(dataset,
+                        batch_size= opt.batch_size,
+                        shuffle = True,
+                    #   drop_last=True,
+                        num_workers=opt.n_cpu,
+                        persistent_workers=True,
+                        pin_memory=True,
+                        prefetch_factor=10)
+
 
 # Optimizers
 optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
@@ -177,13 +200,16 @@ static_label = to_categorical(
 )
 static_code = Variable(FloatTensor(np.zeros((opt.n_classes ** 2, opt.code_dim))))
 
+n_row=10 # N-rows for sampling images
 
 def sample_image(n_row, batches_done):
     """Saves a grid of generated digits ranging from 0 to n_classes"""
     # Static sample
     z = Variable(FloatTensor(np.random.normal(0, 1, (n_row ** 2, opt.latent_dim))))
+
     static_sample = generator(z, static_label, static_code)
-    save_image(static_sample.data, "images/static/%d.png" % batches_done, nrow=n_row, normalize=True)
+    # save_image(static_sample.data, "images/static/%d.png" % batches_done, nrow=n_row, normalize=True)
+    exp_log.add_image('static',vutils.make_grid(static_sample.data,nrow=n_row, normalize=True), batches_done)
 
     # Get varied c1 and c2
     zeros = np.zeros((n_row ** 2, 1))
@@ -192,16 +218,18 @@ def sample_image(n_row, batches_done):
     c2 = Variable(FloatTensor(np.concatenate((zeros, c_varied), -1)))
     sample1 = generator(static_z, static_label, c1)
     sample2 = generator(static_z, static_label, c2)
-    save_image(sample1.data, "images/varying_c1/%d.png" % batches_done, nrow=n_row, normalize=True)
-    save_image(sample2.data, "images/varying_c2/%d.png" % batches_done, nrow=n_row, normalize=True)
+    # save_image(sample1.data, "images/varying_c1/%d.png" % batches_done, nrow=n_row, normalize=True)
+    # save_image(sample2.data, "images/varying_c2/%d.png" % batches_done, nrow=n_row, normalize=True)
+    exp_log.add_image('varying_c1',vutils.make_grid(sample1.data,nrow=n_row, normalize=True), batches_done)
+    exp_log.add_image('varying_c2',vutils.make_grid(sample2.data,nrow=n_row, normalize=True), batches_done)
 
 
 # ----------
 #  Training
 # ----------
-
-for epoch in range(opt.n_epochs):
-    for i, (imgs, labels) in enumerate(dataloader):
+sample_image(n_row=n_row, batches_done=0)
+for epoch in range(1,opt.n_epochs+1):
+    for i, (imgs,labels) in enumerate(dataloader):
 
         batch_size = imgs.shape[0]
 
@@ -289,6 +317,21 @@ for epoch in range(opt.n_epochs):
             "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [info loss: %f]"
             % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item(), info_loss.item())
         )
-        batches_done = epoch * len(dataloader) + i
-        if batches_done % opt.sample_interval == 0:
-            sample_image(n_row=10, batches_done=batches_done)
+        exp_log.log({'d_loss': d_loss.item(),'g_loss': g_loss.item(), 'info_loss': info_loss.item()})
+
+    # ------------
+    # Save Model
+    # ------------
+    sample_image(n_row=n_row, batches_done=epoch)
+    if epoch % opt.sample_interval == 0:
+        ##### Save Model #####
+        savefile = os.path.join(log_save_dir,exp_log.name,f'version_{exp_log.version}','checkpoints','checkpoint_{:d}.pt'.format(epoch))
+        torch.save({'generator': generator.state_dict(),
+                    'discriminator':discriminator.state_dict(),
+                    'optimizer_G':optimizer_G.state_dict(),
+                    'optimizer_D':optimizer_D.state_dict(),
+                    'optimizer_info':optimizer_info.state_dict(),
+                    'Epoch': epoch,
+                    'Loss': {'d_loss': d_loss.item(),'g_loss': g_loss.item(), 'info_loss': info_loss.item()}},
+                    savefile)
+        print('Saved New Model')
