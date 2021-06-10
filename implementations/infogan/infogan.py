@@ -11,7 +11,7 @@ from torchvision.utils import save_image
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
-from datasets import WCDataset
+from .datasets import WCDataset
 from test_tube import Experiment
 
 import torchvision.utils as vutils
