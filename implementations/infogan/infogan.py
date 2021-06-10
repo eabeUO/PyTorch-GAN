@@ -19,24 +19,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
+FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
+LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=1000, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=1024, help="size of the batches")
-parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
-parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--n_cpu", type=int, default=32, help="number of cpu threads to use during batch generation")
-parser.add_argument("--latent_dim", type=int, default=64, help="dimensionality of the latent space")
-parser.add_argument("--code_dim", type=int, default=2, help="latent code")
-parser.add_argument("--n_classes", type=int, default=10, help="number of classes for dataset")
-parser.add_argument("--img_size", type=int, default=64, help="size of each image dimension")
-parser.add_argument("--channels", type=int, default=1, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=10, help="interval between image sampling")
-opt = parser.parse_args()
-print(opt)
-
-cuda = True if torch.cuda.is_available() else False
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n_epochs", type=int, default=1000, help="number of epochs of training")
+    parser.add_argument("--batch_size", type=int, default=1024, help="size of the batches")
+    parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
+    parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
+    parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
+    parser.add_argument("--n_cpu", type=int, default=32, help="number of cpu threads to use during batch generation")
+    parser.add_argument("--latent_dim", type=int, default=64, help="dimensionality of the latent space")
+    parser.add_argument("--code_dim", type=int, default=2, help="latent code")
+    parser.add_argument("--n_classes", type=int, default=10, help="number of classes for dataset")
+    parser.add_argument("--img_size", type=int, default=64, help="size of each image dimension")
+    parser.add_argument("--channels", type=int, default=1, help="number of image channels")
+    parser.add_argument("--sample_interval", type=int, default=10, help="interval between image sampling")
+    opt = parser.parse_args()
+    print(opt)
+    return opt
 
 
 def weights_init_normal(m):
@@ -57,11 +59,11 @@ def to_categorical(y, num_columns):
 
 
 class Generator(nn.Module):
-    def __init__(self):
+    def __init__(self,opt):
         super(Generator, self).__init__()
-        input_dim = opt.latent_dim + opt.n_classes + opt.code_dim
+        input_dim = opt['latent_dim'] + opt['n_classes'] + opt['code_dim']
 
-        self.init_size = opt.img_size // 4  # Initial size before upsampling
+        self.init_size = opt['img_size'] // 4  # Initial size before upsampling
         self.l1 = nn.Sequential(nn.Linear(input_dim, 128 * self.init_size ** 2))
 
         self.conv_blocks = nn.Sequential(
@@ -74,7 +76,7 @@ class Generator(nn.Module):
             nn.Conv2d(128, 64, 3, stride=1, padding=1),
             nn.BatchNorm2d(64, 0.8),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, opt.channels, 3, stride=1, padding=1),
+            nn.Conv2d(64, opt['channels'], 3, stride=1, padding=1),
             nn.Tanh(),
         )
 
@@ -87,7 +89,7 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self,opt):
         super(Discriminator, self).__init__()
 
         def discriminator_block(in_filters, out_filters, bn=True):
@@ -98,19 +100,19 @@ class Discriminator(nn.Module):
             return block
 
         self.conv_blocks = nn.Sequential(
-            *discriminator_block(opt.channels, 16, bn=False),
+            *discriminator_block(opt['channels'], 16, bn=False),
             *discriminator_block(16, 32),
             *discriminator_block(32, 64),
             *discriminator_block(64, 128),
         )
 
         # The height and width of downsampled image
-        ds_size = opt.img_size // 2 ** 4
+        ds_size = opt['img_size'] // 2 ** 4
 
         # Output layers
         self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1))
-        self.aux_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt.n_classes), nn.Softmax())
-        self.latent_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt.code_dim))
+        self.aux_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt['n_classes']), nn.Softmax())
+        self.latent_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt['code_dim']))
 
     def forward(self, img):
         out = self.conv_blocks(img)
@@ -120,218 +122,217 @@ class Discriminator(nn.Module):
         latent_code = self.latent_layer(out)
 
         return validity, label, latent_code
+if __name__ == '__main__':
+    opt = parse_args()
+    cuda = True if torch.cuda.is_available() else False
+
+    # Loss functions
+    adversarial_loss = torch.nn.MSELoss()
+    categorical_loss = torch.nn.CrossEntropyLoss()
+    continuous_loss = torch.nn.MSELoss()
+
+    # Loss weights
+    lambda_cat = 1
+    lambda_con = 0.1
+
+    # Initialize generator and discriminator
+    generator = Generator()
+    discriminator = Discriminator()
+
+    if cuda:
+        generator.cuda()
+        discriminator.cuda()
+        adversarial_loss.cuda()
+        categorical_loss.cuda()
+        continuous_loss.cuda()
+
+    # Initialize weights
+    generator.apply(weights_init_normal)
+    discriminator.apply(weights_init_normal)
+
+    # Configure data loader
+    log_save_dir = os.path.expanduser('~/Research/FMEphys/GAN_Logs')
+    exp_log = Experiment(name='InfoGan',
+                    debug=False,
+                    save_dir=log_save_dir,
+                    autosave=True)
+    os.makedirs(os.path.join(log_save_dir,exp_log.name,f'version_{exp_log.version}','checkpoints'), exist_ok=True)
+    configfile = os.path.join(log_save_dir,exp_log.name,f'version_{exp_log.version}','config.yaml')
+    with open(configfile,'w') as file: 
+        try:
+            yaml.dump(opt.__dict__, file)
+        except yaml.YAMLError as exc:
+            print(exc)
+
+    train_path = os.path.expanduser("~/Research/FMEphys/WC3d_Train_Data.csv")
+    val_path = os.path.expanduser("~/Research/FMEphys/WC3d_Val_Data.csv")
+    SetRange = transforms.Lambda(lambda X: 2 * X - 1.)
+    transform = transforms.Compose([transforms.Grayscale(num_output_channels=1),
+                                    transforms.Resize((64,64)),
+                                    transforms.ToTensor(),
+                                    SetRange])
+
+    dataset = WCDataset(root_dir = os.path.expanduser("~/Research/FMEphys/data/"),
+                                    csv_file = train_path,
+                                    transform=transform
+                                    )
+
+    dataloader = DataLoader(dataset,
+                            batch_size= opt['batch_size'],
+                            shuffle = True,
+                        #   drop_last=True,
+                            num_workers=opt['n_cpu'],
+                            persistent_workers=True,
+                            pin_memory=True,
+                            prefetch_factor=10)
 
 
-# Loss functions
-adversarial_loss = torch.nn.MSELoss()
-categorical_loss = torch.nn.CrossEntropyLoss()
-continuous_loss = torch.nn.MSELoss()
+    # Optimizers
+    optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt['lr'], betas=(opt['b1'], opt['b2']))
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt['lr'], betas=(opt['b1'], opt['b2']))
+    optimizer_info = torch.optim.Adam(
+        itertools.chain(generator.parameters(), discriminator.parameters()), lr=opt['lr'], betas=(opt['b1'], opt['b2'])
+    )
 
-# Loss weights
-lambda_cat = 1
-lambda_con = 0.1
+    # Static generator inputs for sampling
+    static_z = Variable(FloatTensor(np.zeros((opt['n_classes'] ** 2, opt['latent_dim']))))
+    static_label = to_categorical(
+        np.array([num for _ in range(opt['n_classes']) for num in range(opt['n_classes'])]), num_columns=opt['n_classes']
+    )
+    static_code = Variable(FloatTensor(np.zeros((opt['n_classes'] ** 2, opt['code_dim']))))
 
-# Initialize generator and discriminator
-generator = Generator()
-discriminator = Discriminator()
+    n_row=10 # N-rows for sampling images
 
-if cuda:
-    generator.cuda()
-    discriminator.cuda()
-    adversarial_loss.cuda()
-    categorical_loss.cuda()
-    continuous_loss.cuda()
+    def sample_image(n_row, batches_done):
+        """Saves a grid of generated digits ranging from 0 to n_classes"""
+        # Static sample
+        z = Variable(FloatTensor(np.random.normal(0, 1, (n_row ** 2, opt['latent_dim']))))
 
-# Initialize weights
-generator.apply(weights_init_normal)
-discriminator.apply(weights_init_normal)
+        static_sample = generator(z, static_label, static_code)
+        # save_image(static_sample.data, "images/static/%d.png" % batches_done, nrow=n_row, normalize=True)
+        exp_log.add_image('static',vutils.make_grid(static_sample.data,nrow=n_row, normalize=True), batches_done)
 
-# Configure data loader
-log_save_dir = os.path.expanduser('~/Research/FMEphys/GAN_Logs')
-exp_log = Experiment(name='InfoGan',
-                 debug=False,
-                 save_dir=log_save_dir,
-                 autosave=True)
-os.makedirs(os.path.join(log_save_dir,exp_log.name,f'version_{exp_log.version}','checkpoints'), exist_ok=True)
-configfile = os.path.join(log_save_dir,exp_log.name,f'version_{exp_log.version}','config.yaml')
-with open(configfile,'w') as file: 
-    try:
-        yaml.dump(opt.__dict__, file)
-    except yaml.YAMLError as exc:
-        print(exc)
-
-train_path = os.path.expanduser("~/Research/FMEphys/WC3d_Train_Data.csv")
-val_path = os.path.expanduser("~/Research/FMEphys/WC3d_Val_Data.csv")
-SetRange = transforms.Lambda(lambda X: 2 * X - 1.)
-transform = transforms.Compose([transforms.Grayscale(num_output_channels=1),
-                                transforms.Resize((64,64)),
-                                transforms.ToTensor(),
-                                SetRange])
-
-dataset = WCDataset(root_dir = os.path.expanduser("~/Research/FMEphys/data/"),
-                                csv_file = train_path,
-                                transform=transform
-                                )
-
-dataloader = DataLoader(dataset,
-                        batch_size= opt.batch_size,
-                        shuffle = True,
-                    #   drop_last=True,
-                        num_workers=opt.n_cpu,
-                        persistent_workers=True,
-                        pin_memory=True,
-                        prefetch_factor=10)
+        # Get varied c1 and c2
+        zeros = np.zeros((n_row ** 2, 1))
+        c_varied = np.repeat(np.linspace(-1, 1, n_row)[:, np.newaxis], n_row, 0)
+        c1 = Variable(FloatTensor(np.concatenate((c_varied, zeros), -1)))
+        c2 = Variable(FloatTensor(np.concatenate((zeros, c_varied), -1)))
+        sample1 = generator(static_z, static_label, c1)
+        sample2 = generator(static_z, static_label, c2)
+        # save_image(sample1.data, "images/varying_c1/%d.png" % batches_done, nrow=n_row, normalize=True)
+        # save_image(sample2.data, "images/varying_c2/%d.png" % batches_done, nrow=n_row, normalize=True)
+        exp_log.add_image('varying_c1',vutils.make_grid(sample1.data,nrow=n_row, normalize=True), batches_done)
+        exp_log.add_image('varying_c2',vutils.make_grid(sample2.data,nrow=n_row, normalize=True), batches_done)
 
 
-# Optimizers
-optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_info = torch.optim.Adam(
-    itertools.chain(generator.parameters(), discriminator.parameters()), lr=opt.lr, betas=(opt.b1, opt.b2)
-)
+    # ----------
+    #  Training
+    # ----------
+    sample_image(n_row=n_row, batches_done=0)
+    for epoch in range(1,opt['n_epochs']+1):
+        for i, (imgs,labels) in enumerate(dataloader):
 
-FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
-LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
+            batch_size = imgs.shape[0]
 
-# Static generator inputs for sampling
-static_z = Variable(FloatTensor(np.zeros((opt.n_classes ** 2, opt.latent_dim))))
-static_label = to_categorical(
-    np.array([num for _ in range(opt.n_classes) for num in range(opt.n_classes)]), num_columns=opt.n_classes
-)
-static_code = Variable(FloatTensor(np.zeros((opt.n_classes ** 2, opt.code_dim))))
+            # Adversarial ground truths
+            valid = Variable(FloatTensor(batch_size, 1).fill_(1.0), requires_grad=False)
+            fake = Variable(FloatTensor(batch_size, 1).fill_(0.0), requires_grad=False)
 
-n_row=10 # N-rows for sampling images
+            # Configure input
+            real_imgs = Variable(imgs.type(FloatTensor))
+            labels = to_categorical(labels.numpy(), num_columns=opt['n_classes'])
 
-def sample_image(n_row, batches_done):
-    """Saves a grid of generated digits ranging from 0 to n_classes"""
-    # Static sample
-    z = Variable(FloatTensor(np.random.normal(0, 1, (n_row ** 2, opt.latent_dim))))
+            # -----------------
+            #  Train Generator
+            # -----------------
 
-    static_sample = generator(z, static_label, static_code)
-    # save_image(static_sample.data, "images/static/%d.png" % batches_done, nrow=n_row, normalize=True)
-    exp_log.add_image('static',vutils.make_grid(static_sample.data,nrow=n_row, normalize=True), batches_done)
+            optimizer_G.zero_grad()
 
-    # Get varied c1 and c2
-    zeros = np.zeros((n_row ** 2, 1))
-    c_varied = np.repeat(np.linspace(-1, 1, n_row)[:, np.newaxis], n_row, 0)
-    c1 = Variable(FloatTensor(np.concatenate((c_varied, zeros), -1)))
-    c2 = Variable(FloatTensor(np.concatenate((zeros, c_varied), -1)))
-    sample1 = generator(static_z, static_label, c1)
-    sample2 = generator(static_z, static_label, c2)
-    # save_image(sample1.data, "images/varying_c1/%d.png" % batches_done, nrow=n_row, normalize=True)
-    # save_image(sample2.data, "images/varying_c2/%d.png" % batches_done, nrow=n_row, normalize=True)
-    exp_log.add_image('varying_c1',vutils.make_grid(sample1.data,nrow=n_row, normalize=True), batches_done)
-    exp_log.add_image('varying_c2',vutils.make_grid(sample2.data,nrow=n_row, normalize=True), batches_done)
+            # Sample noise and labels as generator input
+            z = Variable(FloatTensor(np.random.normal(0, 1, (batch_size, opt['latent_dim']))))
+            label_input = to_categorical(np.random.randint(0, opt['n_classes'], batch_size), num_columns=opt['n_classes'])
+            code_input = Variable(FloatTensor(np.random.uniform(-1, 1, (batch_size, opt['code_dim']))))
 
+            # Generate a batch of images
+            gen_imgs = generator(z, label_input, code_input)
 
-# ----------
-#  Training
-# ----------
-sample_image(n_row=n_row, batches_done=0)
-for epoch in range(1,opt.n_epochs+1):
-    for i, (imgs,labels) in enumerate(dataloader):
+            # Loss measures generator's ability to fool the discriminator
+            validity, _, _ = discriminator(gen_imgs)
+            g_loss = adversarial_loss(validity, valid)
 
-        batch_size = imgs.shape[0]
+            g_loss.backward()
+            optimizer_G.step()
 
-        # Adversarial ground truths
-        valid = Variable(FloatTensor(batch_size, 1).fill_(1.0), requires_grad=False)
-        fake = Variable(FloatTensor(batch_size, 1).fill_(0.0), requires_grad=False)
+            # ---------------------
+            #  Train Discriminator
+            # ---------------------
 
-        # Configure input
-        real_imgs = Variable(imgs.type(FloatTensor))
-        labels = to_categorical(labels.numpy(), num_columns=opt.n_classes)
+            optimizer_D.zero_grad()
 
-        # -----------------
-        #  Train Generator
-        # -----------------
+            # Loss for real images
+            real_pred, _, _ = discriminator(real_imgs)
+            d_real_loss = adversarial_loss(real_pred, valid)
 
-        optimizer_G.zero_grad()
+            # Loss for fake images
+            fake_pred, _, _ = discriminator(gen_imgs.detach())
+            d_fake_loss = adversarial_loss(fake_pred, fake)
 
-        # Sample noise and labels as generator input
-        z = Variable(FloatTensor(np.random.normal(0, 1, (batch_size, opt.latent_dim))))
-        label_input = to_categorical(np.random.randint(0, opt.n_classes, batch_size), num_columns=opt.n_classes)
-        code_input = Variable(FloatTensor(np.random.uniform(-1, 1, (batch_size, opt.code_dim))))
+            # Total discriminator loss
+            d_loss = (d_real_loss + d_fake_loss) / 2
 
-        # Generate a batch of images
-        gen_imgs = generator(z, label_input, code_input)
+            d_loss.backward()
+            optimizer_D.step()
 
-        # Loss measures generator's ability to fool the discriminator
-        validity, _, _ = discriminator(gen_imgs)
-        g_loss = adversarial_loss(validity, valid)
+            # ------------------
+            # Information Loss
+            # ------------------
 
-        g_loss.backward()
-        optimizer_G.step()
+            optimizer_info.zero_grad()
 
-        # ---------------------
-        #  Train Discriminator
-        # ---------------------
+            # Sample labels
+            sampled_labels = np.random.randint(0, opt['n_classes'], batch_size)
 
-        optimizer_D.zero_grad()
+            # Ground truth labels
+            gt_labels = Variable(LongTensor(sampled_labels), requires_grad=False)
 
-        # Loss for real images
-        real_pred, _, _ = discriminator(real_imgs)
-        d_real_loss = adversarial_loss(real_pred, valid)
+            # Sample noise, labels and code as generator input
+            z = Variable(FloatTensor(np.random.normal(0, 1, (batch_size, opt['latent_dim']))))
+            label_input = to_categorical(sampled_labels, num_columns=opt['n_classes'])
+            code_input = Variable(FloatTensor(np.random.uniform(-1, 1, (batch_size, opt['code_dim']))))
 
-        # Loss for fake images
-        fake_pred, _, _ = discriminator(gen_imgs.detach())
-        d_fake_loss = adversarial_loss(fake_pred, fake)
+            gen_imgs = generator(z, label_input, code_input)
+            _, pred_label, pred_code = discriminator(gen_imgs)
 
-        # Total discriminator loss
-        d_loss = (d_real_loss + d_fake_loss) / 2
+            info_loss = lambda_cat * categorical_loss(pred_label, gt_labels) + lambda_con * continuous_loss(
+                pred_code, code_input
+            )
 
-        d_loss.backward()
-        optimizer_D.step()
+            info_loss.backward()
+            optimizer_info.step()
 
-        # ------------------
-        # Information Loss
-        # ------------------
+            # --------------
+            # Log Progress
+            # --------------
 
-        optimizer_info.zero_grad()
+            print(
+                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [info loss: %f]"
+                % (epoch, opt['n_epochs'], i, len(dataloader), d_loss.item(), g_loss.item(), info_loss.item())
+            )
+            exp_log.log({'d_loss': d_loss.item(),'g_loss': g_loss.item(), 'info_loss': info_loss.item()})
 
-        # Sample labels
-        sampled_labels = np.random.randint(0, opt.n_classes, batch_size)
-
-        # Ground truth labels
-        gt_labels = Variable(LongTensor(sampled_labels), requires_grad=False)
-
-        # Sample noise, labels and code as generator input
-        z = Variable(FloatTensor(np.random.normal(0, 1, (batch_size, opt.latent_dim))))
-        label_input = to_categorical(sampled_labels, num_columns=opt.n_classes)
-        code_input = Variable(FloatTensor(np.random.uniform(-1, 1, (batch_size, opt.code_dim))))
-
-        gen_imgs = generator(z, label_input, code_input)
-        _, pred_label, pred_code = discriminator(gen_imgs)
-
-        info_loss = lambda_cat * categorical_loss(pred_label, gt_labels) + lambda_con * continuous_loss(
-            pred_code, code_input
-        )
-
-        info_loss.backward()
-        optimizer_info.step()
-
-        # --------------
-        # Log Progress
-        # --------------
-
-        print(
-            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [info loss: %f]"
-            % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item(), info_loss.item())
-        )
-        exp_log.log({'d_loss': d_loss.item(),'g_loss': g_loss.item(), 'info_loss': info_loss.item()})
-
-    # ------------
-    # Save Model
-    # ------------
-    sample_image(n_row=n_row, batches_done=epoch)
-    if epoch % opt.sample_interval == 0:
-        ##### Save Model #####
-        savefile = os.path.join(log_save_dir,exp_log.name,f'version_{exp_log.version}','checkpoints','checkpoint_{:d}.pt'.format(epoch))
-        torch.save({'generator': generator.state_dict(),
-                    'discriminator':discriminator.state_dict(),
-                    'optimizer_G':optimizer_G.state_dict(),
-                    'optimizer_D':optimizer_D.state_dict(),
-                    'optimizer_info':optimizer_info.state_dict(),
-                    'Epoch': epoch,
-                    'Loss': {'d_loss': d_loss.item(),'g_loss': g_loss.item(), 'info_loss': info_loss.item()}},
-                    savefile)
-        print('Saved New Model')
+        # ------------
+        # Save Model
+        # ------------
+        sample_image(n_row=n_row, batches_done=epoch)
+        if epoch % opt['sample_interval'] == 0:
+            ##### Save Model #####
+            savefile = os.path.join(log_save_dir,exp_log.name,f'version_{exp_log.version}','checkpoints','checkpoint_{:d}.pt'.format(epoch))
+            torch.save({'generator': generator.state_dict(),
+                        'discriminator':discriminator.state_dict(),
+                        'optimizer_G':optimizer_G.state_dict(),
+                        'optimizer_D':optimizer_D.state_dict(),
+                        'optimizer_info':optimizer_info.state_dict(),
+                        'Epoch': epoch,
+                        'Loss': {'d_loss': d_loss.item(),'g_loss': g_loss.item(), 'info_loss': info_loss.item()}},
+                        savefile)
+            print('Saved New Model')
