@@ -19,6 +19,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
+cuda = True if torch.cuda.is_available() else False
+
 FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
 
@@ -122,9 +124,9 @@ class Discriminator(nn.Module):
         latent_code = self.latent_layer(out)
 
         return validity, label, latent_code
+
 if __name__ == '__main__':
     opt = parse_args()
-    cuda = True if torch.cuda.is_available() else False
 
     # Loss functions
     adversarial_loss = torch.nn.MSELoss()
